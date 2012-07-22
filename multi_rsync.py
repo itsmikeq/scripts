@@ -32,80 +32,25 @@ except getopt.GetoptError, err:
 output = None
 verbose = False
 
-class MultiProcessingLogHandler(logging.Handler):
-    def __init__(self, handler, queue, child=False):
-        logging.Handler.__init__(self)
-
-        self._handler = handler
-        self.queue = queue
-
-        # we only want one of the loggers to be pulling from the queue.
-        # If there is a way to do this without needing to be passed this
-        # information, that would be great!
-        if child == False:
-            self.shutdown = False
-            self.polltime = 1
-            t = threading.Thread(target=self.receive)
-            t.daemon = True
-            t.start()
-
-    def setFormatter(self, fmt):
-        logging.Handler.setFormatter(self, fmt)
-        self._handler.setFormatter(fmt)
-
-    def receive(self):
-        #print "receive on"
-        while (self.shutdown == False) or (self.queue.empty == False):
-            # so we block for a short period of time so that we can
-            # check for the shutdown cases.
-            try:
-                record = self.queue.get(True, self.polltime)
-                self._handler.emit(record)
-            # except Queue.Empty, e:
-            except self.queue.empty,e:
-                pass
-
-    def send(self, s):
-        # send just puts it in the queue for the server to retrieve
-        self.queue.put(s)
-
-    def _format_record(self, record):
-        ei = record.exc_info
-        if ei:
-            dummy = self.format(record) # just to get traceback text into record.exc_text
-            record.exc_info = None  # to avoid Unpickleable error
-
-        return record
-
-    def emit(self, record):
-        try:
-            s = self._format_record(record)
-            self.send(s)
-        except (KeyboardInterrupt, SystemExit):
-            raise
-        except:
-            self.handleError(record)
-
-    def close(self):
-        time.sleep(self.polltime+1) # give some time for messages to enter the queue.
-        self.shutdown = True
-        time.sleep(self.polltime+1) # give some time for the server to time out and see the shutdown
-
-    def __del__(self):
-        self.close() # hopefully this aids in orderly shutdown when things are going poorly.
 
 
 def set_logging(logfile):
   # logging.formatter='%(asctime)-15s %(processName)s %(user)-8s %(message)s'
   logger.propagate = True
+  # stream = StringIO.StringIO()
   global hdlr
   formatter = logging.Formatter("%(levelname)s: %(asctime)s - %(name)s - %(process)s - %(message)s")
   hdlr = logging.FileHandler(logfile)
+  # logQueue = multiprocessing.Queue(num_threads)
+  # handler = MultiProcessingLogHandler(logging.StreamHandler(stream), logQueue)
   hdlr.setFormatter(formatter)
   logger.addHandler(hdlr)
   global loglevel
   loglevel = logging.DEBUG 
   logger.setLevel(loglevel)
+  # logging.getLogger('').addHandler(handler)
+  logging.getLogger('').addHandler(hdlr)
+
   return hdlr
 
 
@@ -115,29 +60,27 @@ def usage():
   '''
 
 def find_git_dirs(root_path=os.curdir):
-  logger.info("Looking for %s dirs in %s" % (include,root_path))
-  print "Looking for %s dirs in %s" % (include,root_path)
-  if include in ("",None):
-    return root_path
   git_dirs = []
+  if include in ("",None):
+    for path in os.listdir(os.path.abspath(root_path)):
+      if path not in git_dirs:
+        logger.info("Adding %s" % (str(path)))
+        git_dirs.append(path)      
+    return git_dirs
+  logger.info("Looking for %s dirs in %s" % (include,root_path))
+  # print "Looking for %s dirs in %s" % (include,root_path)
   for path, dirs, files in os.walk(os.path.abspath(root_path)):
     if re.match("^.*"+include+"$",str(path)):
-      logger.info("Adding %s" % (str(path)) )
-      git_dirs.append(str(path))
+      logger.info("Adding %s" % (str(path)))
+      if path not in git_dirs:
+        git_dirs.append(str(path))
       continue
     for dir in dirs:
-      # print "Looking through directory: %s/%s" % (path,dir)
-      if re.match("^.*"+include+"$",dir):
-        logger.info("Adding %s/%s" % (path,dir) )
-        git_dirs.append(str(path+'/'+dir))
+        if re.match("^.*"+include+"$",dir):
+          if path not in git_dirs:
+            logger.info("Adding %s" % (path) )
+            git_dirs.append(str(path))
   return git_dirs
-def initPool(queue, level):
-    """
-    This causes the logging module to be initialized with the necessary info
-    in pool threads to work correctly.
-    """
-    logging.getLogger('').addHandler(MultiProcessingLogHandler(logging.StreamHandler(), queue, child=True))
-    logging.getLogger('').setLevel(level)
 
 def sync_directory(i,queue):
   """syncsDirectory"""
@@ -147,24 +90,20 @@ def sync_directory(i,queue):
     if dir in exclude:
       queue.task_done()
     else:
-      hdlr.acquire()
-      logger.info("Beginning "+ dir +" copy to " + destination)
-      command = rsync + " " + dir + " " + destination
-      logger.info("Running " + command)
+      logger.info("Beginning "+ str(dir) +" copy to " + str(destination))
+      command = str(rsync) + " " + str(dir) + " " + str(destination)
+      logger.info("Running " + str(command))
       ret = subprocess.call(command,
                 shell=True,
                 stdout=open(logfile + "stdout.log", 'a'),
                 stderr=subprocess.STDOUT)
       #print "running dir on", dir
       queue.task_done()
-      logger.info("Finishing"+ dir )
+      logger.info("Finishing "+ str(dir) )
     queuesize = queue.qsize()
-    logger.info(str(queuesize) + " remaining")
-    print queuesize, "remaining"
-    try:
-      hdlr.release()
-    except:
-      pass
+    if queuesize > 0:
+      logger.info(str(queuesize) + " remaining")
+      print queuesize, " remaining"
 
 if __name__ == "__main__":
   for o, a in opts:
@@ -201,33 +140,29 @@ if __name__ == "__main__":
         include = a
     else:
       assert False, "unhandled option"
-  stream = StringIO.StringIO()
-  logQueue = multiprocessing.Queue(num_threads)
-  handler= MultiProcessingLogHandler(logging.StreamHandler(stream), logQueue)
-  logging.getLogger('').addHandler(handler)
-  logging.getLogger
   set_logging(logfile)
-  
-  for i in range(num_threads):
-    '''
-    Start the threads
-    '''
-    worker = Thread(target=sync_directory, args=(i,queue))
-    worker.setDaemon(True)
-    initPool(queue,loglevel)
-    worker.start()
-  print "Looking for .git dirs in source: %s" % source
-  directories = find_git_dirs(source)
-  if directories in (None,"") or source in (None,""):
-    logger.info("Did not find any git dirs in %s" % source)
-    print "Did not find any git dirs in %s" % source
-    sys.exit(0)
-  print "Found git dirs: " + str(directories)
-  for dir in directories:
-    '''
-    Fill the queue
-    '''
-    queue.put(dir)
-  print "*** Main thread waiting ***"
-  queue.join()
-  print "*** Main thread done ***"
+  try:
+    for i in range(num_threads):
+      '''
+      Start the threads
+      '''
+      worker = Thread(target=sync_directory, args=(i,queue))
+      worker.setDaemon(True)
+      worker.start()
+    print "Looking for .git dirs in source: %s" % source
+    directories = find_git_dirs(source)
+    if directories in (None,"") or source in (None,""):
+      logger.info("Did not find any git dirs in %s" % source)
+      print "Did not find any git dirs in %s" % source
+      sys.exit(0)
+    print "Found git dirs: " + str(directories)
+    for dir in directories:
+      '''
+      Fill the queue
+      '''
+      queue.put(dir)
+    print "*** Main thread waiting ***"
+    queue.join()
+    print "*** Main thread done ***"
+  except (KeyboardInterrupt, SystemExit):
+    raise
