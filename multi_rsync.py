@@ -55,13 +55,14 @@ class MultiProcessingLogHandler(logging.Handler):
 
     def receive(self):
         #print "receive on"
-        while (self.shutdown == False) or (self.queue.empty() == False):
+        while (self.shutdown == False) or (self.queue.empty == False):
             # so we block for a short period of time so that we can
             # check for the shutdown cases.
             try:
                 record = self.queue.get(True, self.polltime)
                 self._handler.emit(record)
-            except Queue.Empty, e:
+            # except Queue.Empty, e:
+            except self.queue.empty,e:
                 pass
 
     def send(self, s):
@@ -101,8 +102,10 @@ def set_logging(logfile):
   formatter = logging.Formatter("%(levelname)s: %(asctime)s - %(name)s - %(process)s - %(message)s")
   hdlr = logging.FileHandler(logfile)
   hdlr.setFormatter(formatter)
-  logger.addHandler(hdlr) 
-  logger.setLevel(logging.DEBUG)
+  logger.addHandler(hdlr)
+  global loglevel
+  loglevel = logging.DEBUG 
+  logger.setLevel(loglevel)
   return hdlr
 
 
@@ -119,13 +122,13 @@ def find_git_dirs(root_path=os.curdir):
   git_dirs = []
   for path, dirs, files in os.walk(os.path.abspath(root_path)):
     if re.match("^.*"+include+"$",str(path)):
-      print "Adding %s" % (str(path))
+      logger.info("Adding %s" % (str(path)) )
       git_dirs.append(str(path))
       continue
     for dir in dirs:
-      print "Looking through directory: %s/%s" % (path,dir)
+      # print "Looking through directory: %s/%s" % (path,dir)
       if re.match("^.*"+include+"$",dir):
-        print "Adding %s/%s" % (path,dir)
+        logger.info("Adding %s/%s" % (path,dir) )
         git_dirs.append(str(path+'/'+dir))
   return git_dirs
 def initPool(queue, level):
@@ -199,18 +202,19 @@ if __name__ == "__main__":
     else:
       assert False, "unhandled option"
   stream = StringIO.StringIO()
-  logQueue = multiprocessing.Queue(100)
+  logQueue = multiprocessing.Queue(num_threads)
   handler= MultiProcessingLogHandler(logging.StreamHandler(stream), logQueue)
   logging.getLogger('').addHandler(handler)
   logging.getLogger
   set_logging(logfile)
-
+  
   for i in range(num_threads):
     '''
     Start the threads
     '''
     worker = Thread(target=sync_directory, args=(i,queue))
     worker.setDaemon(True)
+    initPool(queue,loglevel)
     worker.start()
   print "Looking for .git dirs in source: %s" % source
   directories = find_git_dirs(source)
